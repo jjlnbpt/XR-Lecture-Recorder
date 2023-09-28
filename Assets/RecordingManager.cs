@@ -1,19 +1,17 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
-using System.Numerics;
+using System.Diagnostics;
 using System.Timers;
 using Unity.XR.CoreUtils;
 using UnityEngine;
 using UnityEngine.Assertions;
-/*using Quaternion = UnityEngine.Quaternion;
-using Vector3 = UnityEngine.Vector3;*/
 
 public class RecordingManager : MonoBehaviour
 {
+    #region Private Members
     private Dictionary<string,GameObject> gameObjects = new Dictionary<string,GameObject>();
-    private Dictionary<string, GameObject> clonedGameObjects = new Dictionary<string, GameObject>();
-    private Dictionary<string, Queue<Pose>> recordedTransforms = new Dictionary<string, Queue<Pose>>();
+
+    private RecordingContainer recordingContainer;
 
     private bool recording_first_frame = true;
     private bool playback_first_frame = true;
@@ -27,13 +25,20 @@ public class RecordingManager : MonoBehaviour
 
     private bool input_lock = true;
 
-    public void Register(string key, GameObject gameObject)
-    {
-        this.gameObjects.Add(key, gameObject);
-    }
+    private string audio_source_key;
+
+    AudioManager audioManager;
+    private Stopwatch recording_stopwatch;
+    #endregion
+
+    #region Startup and Registration
 
     private void Start()
     {
+        audioManager = FindObjectOfType<AudioManager>();
+        recordingContainer = new RecordingContainer();
+
+        recording_stopwatch = new Stopwatch();
         timer = new Timer(2000);
         timer.Elapsed += OnStartupElapsed;
         timer.Start();
@@ -44,60 +49,138 @@ public class RecordingManager : MonoBehaviour
         input_lock = false;
     }
 
+    public void Register(string key, GameObject gameObject)
+    {
+        this.gameObjects.Add(key, gameObject);
+
+    }
+
+    public void RegisterAudioSource(string key)
+    {
+        audio_source_key = key;
+    }
+
+    #endregion
+
+    #region Control Flow
     private void Update()
     {
         if (Input.GetKeyDown(KeyCode.R) && !input_lock)
         {
-            recording = true;
-            playback = false;
+            EnterRecordMode();
         }
 
         if (Input.GetKeyDown(KeyCode.P) && !input_lock)
         {
-            recording = false;
-            playback = true;
+            EnterPlaybackMode();
         }
-
 
         Assert.IsTrue(!(recording && playback));
 
         if (recording) Record();
         if (playback) Play();
 
+        if(audioManager.IsRecording() && !recording)
+        {
+            audioManager.EndRecording();
+        }
+
+        if(recording_stopwatch.IsRunning && !recording)
+        {
+            recording_stopwatch.Stop();
+            recording_stopwatch.Reset();
+        }
     }
+
+    public void EnterRecordMode()
+    {
+        if (!input_lock)
+        {
+            recording = !recording;
+            playback = false;
+            if (recording)
+            {
+                recording_first_frame = true;
+            }
+        }
+    }
+
+    public void EnterPlaybackMode()
+    {
+        if (!input_lock)
+        {
+            recording = false;
+            playback = true;
+        }
+    }
+
+    #endregion
+
+    #region Monitor API
+    public bool IsCurrentlyRecording()
+    {
+        return recording;
+    }
+
+    public bool IsCurrentlyPlayback()
+    {
+        return playback;
+    }
+
+    public string CurrentRecordingTime()
+    {
+        TimeSpan ts = recording_stopwatch.Elapsed;
+        string elapsedTime = String.Format("{1:00}:{2:00}.{3:00}",
+            ts.Hours, ts.Minutes, ts.Seconds,
+            ts.Milliseconds / 10);
+        return elapsedTime;
+    }
+
+    #endregion
+
+    #region Recording and Playback Logic
 
     private void Record()
     {
         if (recording_first_frame)
         {
+            Destroy(recordingContainer.audioClip);
+            recordingContainer = new RecordingContainer();
+            recordingContainer.audio_source_key = audio_source_key;
             CloneGameObjects();
             frame_count=0;
             recording_first_frame = false;
+            recordingContainer.audioClip = audioManager.StartRecording();
+            recording_stopwatch.Start();
         }
 
 
         foreach (string key in gameObjects.Keys)
         {
             Transform transform = gameObjects[key].transform;
-            recordedTransforms[key].Enqueue(transform.GetWorldPose());
+            recordingContainer.recordedTransforms[key].Add(transform.GetWorldPose());
         }
 
-        frame_count++;
+        recordingContainer.frame_count++;
 
     }
 
     private void CloneGameObjects()
     {
-        clonedGameObjects.Clear();
+        recordingContainer.clonedGameObjects.Clear();
         foreach (var key in gameObjects)
         {
-            clonedGameObjects.Add(key.Key, Instantiate(key.Value));
-            if(clonedGameObjects[key.Key].TryGetComponent<Rigidbody>(out var rb)){
+            recordingContainer.clonedGameObjects.Add(key.Key, Instantiate(key.Value));
+            if(recordingContainer.clonedGameObjects[key.Key].TryGetComponent<Rigidbody>(out var rb)){
                 Destroy(rb);
             }
-            Destroy(clonedGameObjects[key.Key].GetComponent<RecordingTag>());
-            clonedGameObjects[key.Key].SetActive(false);
-            recordedTransforms[key.Key] = new Queue<Pose>();
+            Destroy(recordingContainer.clonedGameObjects[key.Key].GetComponent<RecordingTag>());
+            if(recordingContainer.audio_source_key == key.Key)
+            {
+                Destroy(recordingContainer.clonedGameObjects[key.Key].GetComponent<AudioTag>());
+            }
+            recordingContainer.clonedGameObjects[key.Key].SetActive(false);
+            recordingContainer.recordedTransforms[key.Key] = new List<Pose>();
         }
     }
 
@@ -107,21 +190,25 @@ public class RecordingManager : MonoBehaviour
         {
             ActivateClones();
             playback_first_frame = false;
+            frame_count = recordingContainer.frame_count;
+            recordingContainer.clonedGameObjects[recordingContainer.audio_source_key].GetComponent<AudioSource>().clip = recordingContainer.audioClip;
+            recordingContainer.clonedGameObjects[recordingContainer.audio_source_key].GetComponent<AudioSource>().Play();
         }
         else if (frame_count == 0)
         {
             DeactivateClones();
             playback_first_frame = true;
             playback = false;
+            recordingContainer.clonedGameObjects[recordingContainer.audio_source_key].GetComponent<AudioSource>().Stop();
             return;
         }
 
-        foreach (string key in clonedGameObjects.Keys)
+        foreach (string key in recordingContainer.clonedGameObjects.Keys)
         {
             try
             {
-                Pose recordedTransform = recordedTransforms[key].Dequeue();
-                clonedGameObjects[key].transform.SetWorldPose(recordedTransform);
+                Pose recordedTransform = recordingContainer.recordedTransforms[key][recordingContainer.recordedTransforms[key].Count - frame_count];
+                recordingContainer.clonedGameObjects[key].transform.SetWorldPose(recordedTransform);
             }
             catch (InvalidOperationException ex)
             {
@@ -134,54 +221,20 @@ public class RecordingManager : MonoBehaviour
 
     private void ActivateClones()
     {
-        foreach (var key in clonedGameObjects)
+        foreach (var key in recordingContainer.clonedGameObjects)
         {
-            clonedGameObjects[key.Key].SetActive(true);
+            recordingContainer.clonedGameObjects[key.Key].SetActive(true);
         }
     }
 
     private void DeactivateClones()
     {
-        foreach (var key in clonedGameObjects)
+        foreach (var key in recordingContainer.clonedGameObjects)
         {
-            clonedGameObjects[key.Key].SetActive(false);
+            recordingContainer.clonedGameObjects[key.Key].SetActive(false);
         }
     }
+
+    #endregion
 }
 
-
-/*class RecordedTransform
-{
-    private Vector3 position;
-    private Vector3 localPosition;
-    private Quaternion rotation;
-    private Quaternion localRotation;
-    private Vector3 scale;
-
-    public RecordedTransform(Transform transform)
-    {
-        this.position = transform.position;
-        this.localPosition = transform.localPosition;
-        this.rotation = transform.rotation;
-        this.localRotation = transform.localRotation;
-        this.scale = transform.localScale;
-    }
-
-    private RecordedTransform(RecordedTransform transform)
-    {
-        this.position = transform.position;
-        this.localPosition = transform.localPosition;
-        this.rotation = transform.rotation;
-        this.localRotation = transform.localRotation;
-        this.scale = transform.scale;
-    }
-
-    public void UpdateTransform(Transform transform)
-    {
-        transform.position = position;
-        transform.localPosition = localPosition;
-        transform.rotation = rotation;
-        transform.localRotation = localRotation;
-        transform.localScale = scale;
-    }
-}*/
