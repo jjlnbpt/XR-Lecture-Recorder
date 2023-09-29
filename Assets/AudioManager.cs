@@ -9,7 +9,7 @@ public class AudioManager : MonoBehaviour
 
     private void Start()
     {
-        active_microphone = Microphone.devices[0];
+        active_microphone = null;
     }
 
     public string[] GetMicrophoneNames()

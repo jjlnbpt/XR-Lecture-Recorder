@@ -5,6 +5,7 @@ using System.Timers;
 using Unity.XR.CoreUtils;
 using UnityEngine;
 using UnityEngine.Assertions;
+using UnityEngine.XR.Interaction.Toolkit;
 
 public class RecordingManager : MonoBehaviour
 {
@@ -171,8 +172,28 @@ public class RecordingManager : MonoBehaviour
         foreach (var key in gameObjects)
         {
             recordingContainer.clonedGameObjects.Add(key.Key, Instantiate(key.Value));
-            if(recordingContainer.clonedGameObjects[key.Key].TryGetComponent<Rigidbody>(out var rb)){
+            if (recordingContainer.clonedGameObjects[key.Key].TryGetComponent<XRGrabInteractable>(out var grab))
+            {
+                Destroy(grab);
+            }
+            if (recordingContainer.clonedGameObjects[key.Key].TryGetComponent<Rigidbody>(out var rb)){
                 Destroy(rb);
+            }
+            if (recordingContainer.clonedGameObjects[key.Key].TryGetComponent<MeshCollider>(out var mesh))
+            {
+                Destroy(mesh);
+            }
+            if (recordingContainer.clonedGameObjects[key.Key].TryGetComponent<SphereCollider>(out var sphere))
+            {
+                Destroy(sphere);
+            }
+            if (recordingContainer.clonedGameObjects[key.Key].TryGetComponent<BoxCollider>(out var box))
+            {
+                Destroy(box);
+            }
+            if (recordingContainer.clonedGameObjects[key.Key].TryGetComponent<PropTag>(out var prop))
+            {
+                Destroy(prop);
             }
             Destroy(recordingContainer.clonedGameObjects[key.Key].GetComponent<RecordingTag>());
             if(recordingContainer.audio_source_key == key.Key)
